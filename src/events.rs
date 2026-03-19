@@ -634,6 +634,14 @@ pub enum SessionEventData {
     ExternalToolRequested(ExternalToolRequestedData),
     /// Protocol v3 broadcast request: CLI requests permission decision from SDK.
     PermissionRequested(PermissionRequestedData),
+    /// Protocol v3 completion: CLI confirms external tool execution finished.
+    ExternalToolCompleted(serde_json::Value),
+    /// Protocol v3 completion: CLI confirms permission request resolved.
+    PermissionCompleted(serde_json::Value),
+    /// Streaming presentation delta (CLI-internal, mirrors message_delta).
+    AssistantStreamingDelta(serde_json::Value),
+    /// Session tools list was updated.
+    SessionToolsUpdated(serde_json::Value),
     /// Unknown event - preserves raw JSON for forward compatibility.
     Unknown(serde_json::Value),
 }
@@ -891,6 +899,13 @@ fn parse_event_data(event_type: &str, data: serde_json::Value) -> SessionEventDa
         "permission.requested" => serde_json::from_value(data)
             .map(SessionEventData::PermissionRequested)
             .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
+        // Protocol v3 completion events
+        "external_tool.completed" => SessionEventData::ExternalToolCompleted(data),
+        "permission.completed" => SessionEventData::PermissionCompleted(data),
+        // Presentation-layer streaming (mirrors message_delta)
+        "assistant.streaming_delta" => SessionEventData::AssistantStreamingDelta(data),
+        // Session tools list updated
+        "session.tools_updated" => SessionEventData::SessionToolsUpdated(data),
         // Unknown event type - preserve raw data
         _ => SessionEventData::Unknown(data),
     }
