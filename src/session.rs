@@ -6,14 +6,16 @@
 //! A session represents a conversation with the Copilot CLI.
 
 use crate::error::{CopilotError, Result};
-use crate::events::{SessionEvent, SessionEventData};
+use crate::events::{
+    ExternalToolRequestedData, PermissionRequestedData, SessionEvent, SessionEventData,
+};
 use crate::types::{
     ErrorOccurredHookInput, MessageOptions, PermissionRequest, PermissionRequestResult,
     PostToolUseHookInput, PreToolUseHookInput, SessionEndHookInput, SessionHooks,
     SessionStartHookInput, Tool, ToolResultObject, UserInputInvocation, UserInputRequest,
     UserInputResponse, UserPromptSubmittedHookInput,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -225,7 +227,12 @@ impl Session {
     /// Dispatch an event to all subscribers.
     ///
     /// This is called by the Client when events are received.
+    /// For protocol v3 broadcast requests (`external_tool.requested`, `permission.requested`),
+    /// this also spawns handler tasks and sends results back to the CLI.
     pub async fn dispatch_event(&self, event: SessionEvent) {
+        // Handle v3 broadcast requests (fire-and-forget, before user handlers)
+        self.handle_broadcast_event(&event);
+
         // Send to broadcast channel
         let _ = self.event_tx.send(event.clone());
 
@@ -234,6 +241,115 @@ impl Session {
         for handler in state.event_handlers.values() {
             handler(&event);
         }
+    }
+
+    /// Handle protocol v3 broadcast request events.
+    ///
+    /// In v3, the CLI sends tool calls and permission requests as session events
+    /// instead of JSON-RPC requests. The SDK executes handlers locally and sends
+    /// results back via RPC.
+    fn handle_broadcast_event(&self, event: &SessionEvent) {
+        match &event.data {
+            SessionEventData::ExternalToolRequested(data) => {
+                let session_id = self.session_id.clone();
+                let invoke_fn = Arc::clone(&self.invoke_fn);
+                let state = Arc::clone(&self.state);
+                let data = data.clone();
+
+                tokio::spawn(async move {
+                    Self::execute_tool_and_respond(session_id, invoke_fn, state, data).await;
+                });
+            }
+            SessionEventData::PermissionRequested(data) => {
+                let session_id = self.session_id.clone();
+                let invoke_fn = Arc::clone(&self.invoke_fn);
+                let state = Arc::clone(&self.state);
+                let data = data.clone();
+
+                tokio::spawn(async move {
+                    Self::execute_permission_and_respond(session_id, invoke_fn, state, data).await;
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// Execute a tool handler and send the result back to the CLI.
+    async fn execute_tool_and_respond(
+        session_id: String,
+        invoke_fn: Arc<InvokeFn>,
+        state: Arc<RwLock<SessionState>>,
+        data: ExternalToolRequestedData,
+    ) {
+        let result = {
+            let state = state.read().await;
+            if let Some(registered) = state.tools.get(&data.tool_name) {
+                if let Some(handler) = registered.handler.as_ref() {
+                    let result_obj = handler(&data.tool_name, &data.arguments);
+                    json!({
+                        "sessionId": session_id,
+                        "requestId": data.request_id,
+                        "result": result_obj
+                    })
+                } else {
+                    json!({
+                        "sessionId": session_id,
+                        "requestId": data.request_id,
+                        "error": format!("No handler for tool: {}", data.tool_name)
+                    })
+                }
+            } else {
+                json!({
+                    "sessionId": session_id,
+                    "requestId": data.request_id,
+                    "error": format!("Tool '{}' is not registered", data.tool_name)
+                })
+            }
+        };
+
+        let _ = invoke_fn("session.tools.handlePendingToolCall", Some(result)).await;
+    }
+
+    /// Execute a permission handler and send the result back to the CLI.
+    async fn execute_permission_and_respond(
+        session_id: String,
+        invoke_fn: Arc<InvokeFn>,
+        state: Arc<RwLock<SessionState>>,
+        data: PermissionRequestedData,
+    ) {
+        let result = {
+            let state = state.read().await;
+            if let Some(handler) = &state.permission_handler {
+                if let Ok(request) =
+                    serde_json::from_value::<PermissionRequest>(data.permission_request.clone())
+                {
+                    let decision = handler(&request);
+                    json!({
+                        "sessionId": session_id,
+                        "requestId": data.request_id,
+                        "result": decision
+                    })
+                } else {
+                    json!({
+                        "sessionId": session_id,
+                        "requestId": data.request_id,
+                        "result": { "kind": "denied-no-approval-rule-and-could-not-request-from-user" }
+                    })
+                }
+            } else {
+                json!({
+                    "sessionId": session_id,
+                    "requestId": data.request_id,
+                    "result": { "kind": "denied-no-approval-rule-and-could-not-request-from-user" }
+                })
+            }
+        };
+
+        let _ = invoke_fn(
+            "session.permissions.handlePendingPermissionRequest",
+            Some(result),
+        )
+        .await;
     }
 
     // =========================================================================

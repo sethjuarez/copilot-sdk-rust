@@ -541,6 +541,39 @@ pub struct ToolExecutionProgressData {
     pub progress_message: String,
 }
 
+/// Data for external_tool.requested event (protocol v3 broadcast request).
+///
+/// In v3, the CLI sends tool execution requests as session events instead of
+/// JSON-RPC requests. The SDK must execute the tool and send the result back
+/// via `session.tools.handlePendingToolCall`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalToolRequestedData {
+    pub request_id: String,
+    pub tool_name: String,
+    pub tool_call_id: String,
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracestate: Option<String>,
+}
+
+/// Data for permission.requested event (protocol v3 broadcast request).
+///
+/// In v3, the CLI sends permission requests as session events. The SDK must
+/// handle the permission and send the result back via
+/// `session.permissions.handlePendingPermissionRequest`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequestedData {
+    pub request_id: String,
+    pub permission_request: serde_json::Value,
+}
+
 /// Data for skill.invoked event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -597,6 +630,10 @@ pub enum SessionEventData {
     SessionSnapshotRewind(SessionSnapshotRewindData),
     SessionUsageInfo(SessionUsageInfoData),
     SkillInvoked(SkillInvokedData),
+    /// Protocol v3 broadcast request: CLI requests tool execution from SDK.
+    ExternalToolRequested(ExternalToolRequestedData),
+    /// Protocol v3 broadcast request: CLI requests permission decision from SDK.
+    PermissionRequested(PermissionRequestedData),
     /// Unknown event - preserves raw JSON for forward compatibility.
     Unknown(serde_json::Value),
 }
@@ -846,6 +883,13 @@ fn parse_event_data(event_type: &str, data: serde_json::Value) -> SessionEventDa
             .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
         "skill.invoked" => serde_json::from_value(data)
             .map(SessionEventData::SkillInvoked)
+            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
+        // Protocol v3 broadcast requests
+        "external_tool.requested" => serde_json::from_value(data)
+            .map(SessionEventData::ExternalToolRequested)
+            .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
+        "permission.requested" => serde_json::from_value(data)
+            .map(SessionEventData::PermissionRequested)
             .unwrap_or_else(|_| SessionEventData::Unknown(serde_json::Value::Null)),
         // Unknown event type - preserve raw data
         _ => SessionEventData::Unknown(data),
