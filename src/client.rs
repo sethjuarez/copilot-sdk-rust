@@ -1269,7 +1269,7 @@ impl Client {
         // Clone Arc references for request handler
         let sessions_for_requests = Arc::clone(&self.sessions);
 
-        // Set up request handler for tool.call and permission.request
+        // Set up request handler for tool.call and permission.request (v2 compat)
         rpc.set_request_handler(move |method, params| {
             use crate::jsonrpc::JsonRpcError;
 
@@ -1278,15 +1278,12 @@ impl Client {
             let params = params.clone();
 
             Box::pin(async move {
-                eprintln!("[copilot-sdk] request: method={} params_keys={:?}", method,
-                    params.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()));
                 let result = match method.as_str() {
                     "tool.call" => handle_tool_call(&sessions, &params).await,
                     "permission.request" => handle_permission_request(&sessions, &params).await,
                     "userInput.request" => handle_user_input_request(&sessions, &params).await,
                     "hooks.invoke" => handle_hooks_invoke(&sessions, &params).await,
                     _ => {
-                        eprintln!("[copilot-sdk] UNKNOWN method: {}", method);
                         return Err(JsonRpcError::new(
                             -32601,
                             format!("Unknown method: {}", method),
@@ -1294,9 +1291,6 @@ impl Client {
                     }
                 };
 
-                if let Err(ref e) = result {
-                    eprintln!("[copilot-sdk] request handler error: {e}");
-                }
                 result.map_err(|e| JsonRpcError::new(-32000, e.to_string()))
             })
         })

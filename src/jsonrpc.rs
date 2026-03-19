@@ -712,38 +712,25 @@ impl StdioJsonRpcClient {
 
     /// Dispatch an incoming message.
     async fn dispatch_message(state: &StdioSharedState, message: Value) {
-        // DEBUG: Log every incoming message
-        let method = message.get("method").and_then(|v| v.as_str()).unwrap_or("<no method>");
-        let has_id = message.get("id").is_some() && !message.get("id").map(|v| v.is_null()).unwrap_or(true);
-        let has_result = message.get("result").is_some();
-        let has_error = message.get("error").is_some();
-        eprintln!("[jsonrpc] dispatch: method={method} has_id={has_id} has_result={has_result} has_error={has_error}");
-
         // Check if it's a response (has id and result/error, no method)
-        if has_id
-            && (has_result || has_error)
-            && method == "<no method>"
+        if message.get("id").is_some()
+            && !message.get("id").map(|v| v.is_null()).unwrap_or(true)
+            && (message.get("result").is_some() || message.get("error").is_some())
+            && message.get("method").is_none()
         {
-            eprintln!("[jsonrpc] → classified as RESPONSE");
             Self::handle_response(state, message).await;
             return;
         }
 
         // Check if it's a request or notification (has method)
         if message.get("method").is_some() {
-            if let Ok(request) = serde_json::from_value::<JsonRpcRequest>(message.clone()) {
+            if let Ok(request) = serde_json::from_value::<JsonRpcRequest>(message) {
                 if request.is_notification() {
-                    eprintln!("[jsonrpc] → classified as NOTIFICATION: {method}");
                     Self::handle_notification(state, &request).await;
                 } else {
-                    eprintln!("[jsonrpc] → classified as REQUEST: {method}");
                     Self::handle_request(state, &request).await;
                 }
-            } else {
-                eprintln!("[jsonrpc] → FAILED to deserialize as JsonRpcRequest: {}", message);
             }
-        } else {
-            eprintln!("[jsonrpc] → UNCLASSIFIED message (no method, not response)");
         }
     }
 
