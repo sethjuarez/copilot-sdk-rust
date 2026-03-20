@@ -149,6 +149,14 @@ impl CopilotProcess {
             Stdio::null()
         });
 
+        // On Windows, prevent a visible console window from flashing
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
         // Spawn the process
         let mut child = cmd.spawn().map_err(CopilotError::ProcessStart)?;
 
